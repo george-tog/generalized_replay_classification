@@ -12,16 +12,7 @@ authors:
     affiliation: Harvard University
 repository-code: https://github.com/george-tog/generalized_replay_classification
 license: MIT
-# TODO: add the paper as the preferred citation once it exists, e.g.
-# preferred-citation:
-#   type: article
-#   authors:
-#     - given-names: George
-#       family-names: Cai
-#   title: "[Title]"
-#   journal: "[Journal]"
-#   year: [Year]
-#   doi: [DOI]
+# reference for preprint coming soon!
 references:
   - type: software
     title: replay_trajectory_classification

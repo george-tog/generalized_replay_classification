@@ -200,3 +200,114 @@ def test_scaled_likelihood_random_is_positive(dtype):
     # Max in each row should be close to 1
     row_max = np.nanmax(out, axis=1)
     np.testing.assert_allclose(row_max, 1.0, rtol=0, atol=1e-6)
+
+
+# ---------- _expected_transition_counts ----------
+
+
+def random_hierarchical_model(n_states=2, n_bins=3, n_time=5, seed=0):
+    """A small random classifier state space with every quantity positive."""
+    rng = np.random.default_rng(seed)
+    continuous = rng.random((n_states, n_states, n_bins, n_bins)) + 0.05
+    continuous /= continuous.sum(axis=-1, keepdims=True)
+    discrete = rng.random((n_states, n_states)) + 0.05
+    discrete /= discrete.sum(axis=-1, keepdims=True)
+    initial = rng.random((n_states, n_bins, 1))
+    initial /= initial.sum()
+    likelihood = rng.random((n_time, n_states, n_bins, 1)) + 0.05
+    return initial, continuous, discrete, likelihood
+
+
+def brute_force_pairwise_counts(initial, continuous, discrete, likelihood):
+    """Sum over time of the pairwise posteriors of the flat product chain."""
+    n_time, n_states, n_bins, _ = likelihood.shape
+    n = n_states * n_bins
+    # A[(s, i), (s', j)] = D[s, s'] * C[s, s'][i, j]
+    A = (discrete[:, :, None, None] * continuous).transpose(0, 2, 1, 3).reshape(n, n)
+    L = likelihood.reshape(n_time, n)
+
+    alpha = np.zeros((n_time, n))
+    alpha[0] = initial.ravel() * L[0]
+    alpha[0] /= alpha[0].sum()
+    scale = np.ones(n_time)
+    for t in range(1, n_time):
+        alpha[t] = (alpha[t - 1] @ A) * L[t]
+        scale[t] = alpha[t].sum()
+        alpha[t] /= scale[t]
+    beta = np.ones((n_time, n))
+    for t in range(n_time - 2, -1, -1):
+        beta[t] = A @ (L[t + 1] * beta[t + 1]) / scale[t + 1]
+
+    xi = np.zeros((n, n))
+    for t in range(n_time - 1):
+        xi += (
+            alpha[t][:, None] * A * (L[t + 1] * beta[t + 1])[None, :] / scale[t + 1]
+        )
+    marginal = (alpha * beta).reshape(n_time, n_states, n_bins)
+    xi = xi.reshape(n_states, n_bins, n_states, n_bins).transpose(0, 2, 1, 3)
+    return xi, marginal
+
+
+def classify(initial, continuous, discrete, likelihood):
+    from replay_trajectory_classification.core import (
+        _acausal_classify,
+        _causal_classify,
+    )
+
+    causal, _ = _causal_classify(initial, continuous, discrete, likelihood)
+    acausal = _acausal_classify(causal, continuous, discrete)
+    return causal, acausal
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_expected_transition_counts_matches_brute_force_forward_backward(seed):
+    from replay_trajectory_classification.core import _expected_transition_counts
+
+    model = random_hierarchical_model(seed=seed)
+    causal, acausal = classify(*model)
+    initial, continuous, discrete, likelihood = model
+    counts = _expected_transition_counts(
+        causal, acausal, continuous, discrete, np.ones((2, 2), dtype=bool)
+    )
+    expected, marginal = brute_force_pairwise_counts(*model)
+
+    np.testing.assert_allclose(acausal[..., 0], marginal, atol=1e-10)
+    np.testing.assert_allclose(counts, expected, atol=1e-10)
+
+
+def test_expected_transition_counts_marginalize_to_the_smoother():
+    from replay_trajectory_classification.core import _expected_transition_counts
+
+    model = random_hierarchical_model(n_states=3, n_bins=4, n_time=7, seed=3)
+    causal, acausal = classify(*model)
+    _, continuous, discrete, _ = model
+    counts = _expected_transition_counts(
+        causal, acausal, continuous, discrete, np.ones((3, 3), dtype=bool)
+    )
+
+    assert counts.sum() == pytest.approx(7 - 1, abs=1e-10)
+    # Summing out the destination gives the earlier time, the source the later.
+    np.testing.assert_allclose(
+        counts.sum(axis=(1, 3)), acausal[:-1, ..., 0].sum(axis=0), atol=1e-10
+    )
+    np.testing.assert_allclose(
+        counts.sum(axis=(0, 2)), acausal[1:, ..., 0].sum(axis=0), atol=1e-10
+    )
+
+
+def test_expected_transition_counts_block_mask_zeros_unselected_blocks():
+    from replay_trajectory_classification.core import _expected_transition_counts
+
+    model = random_hierarchical_model(seed=4)
+    causal, acausal = classify(*model)
+    _, continuous, discrete, _ = model
+    full = _expected_transition_counts(
+        causal, acausal, continuous, discrete, np.ones((2, 2), dtype=bool)
+    )
+    block_mask = np.array([[False, True], [False, True]])
+    masked = _expected_transition_counts(
+        causal, acausal, continuous, discrete, block_mask
+    )
+
+    np.testing.assert_array_equal(masked[~block_mask], 0.0)
+    np.testing.assert_allclose(masked[block_mask], full[block_mask], atol=1e-14)

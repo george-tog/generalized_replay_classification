@@ -337,3 +337,42 @@ def test_decoder_method_signatures():
         predict_sig = inspect.signature(decoder.predict)
         # Should have at least one parameter (data)
         assert len(predict_sig.parameters) >= 1
+
+def test_sorted_spikes_decoder_with_tcm_sr_fits():
+    """The decoder has its own dispatch site, separate from the classifier."""
+    from replay_trajectory_classification import (
+        TCM_SR,
+        Environment,
+        SortedSpikesDecoder,
+    )
+    from replay_trajectory_classification.simulate import (
+        simulate_neuron_with_place_field,
+        simulate_time,
+    )
+
+    sampling_frequency = 100
+    time = simulate_time(4000, sampling_frequency)
+    position = (50 + 49 * np.sin(2 * np.pi * time / 8.0)).reshape(-1, 1)
+    spikes = np.stack(
+        [
+            simulate_neuron_with_place_field(
+                mean, position[:, 0], max_rate=20.0, variance=36.0,
+                sampling_frequency=sampling_frequency,
+            )
+            for mean in np.linspace(5, 95, 8)
+        ],
+        axis=1,
+    )
+
+    environment = Environment(place_bin_size=3.0)
+    decoder = SortedSpikesDecoder(
+        environment=environment, transition_type=TCM_SR(gamma=0.9, beta=0.01)
+    )
+    decoder.fit(position, spikes)
+
+    interior = environment.is_track_interior_.ravel(order="F")
+    n_bins = environment.place_bin_centers_.shape[0]
+    assert decoder.state_transition_.shape == (n_bins, n_bins)
+    np.testing.assert_allclose(
+        decoder.state_transition_[interior][:, interior].sum(axis=1), 1.0, atol=1e-10
+    )

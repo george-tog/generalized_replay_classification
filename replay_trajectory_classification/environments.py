@@ -438,6 +438,7 @@ def _calculate_linear_position(
     projected_track_positions_y : NDArray[np.float64], shape (n_time,)
 
     """
+    track_segment_id = np.array(track_segment_id, dtype=float)  # copy; pandas>=3 gives read-only views
     is_nan = np.isnan(track_segment_id)
     track_segment_id[is_nan] = 0  # need to check
     track_segment_id = track_segment_id.astype(int)

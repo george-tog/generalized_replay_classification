@@ -230,3 +230,103 @@ def test_clusterless_classifier_parameter_validation():
 
     with pytest.raises((ValueError, TypeError)):
         ClusterlessClassifier(environments=environments, model="invalid_model")
+
+# ---------------------- TCM_SR integration ----------------------
+
+
+def simulate_run_and_spikes(n_neurons=8, sampling_frequency=100, duration=40.0):
+    """A back-and-forth run on a linear track plus place-tuned spikes."""
+    from replay_trajectory_classification.simulate import (
+        simulate_neuron_with_place_field,
+        simulate_time,
+    )
+
+    time = simulate_time(int(duration * sampling_frequency), sampling_frequency)
+    position = 50 + 49 * np.sin(2 * np.pi * time / 8.0)
+    place_field_means = np.linspace(5, 95, n_neurons)
+    spikes = np.stack(
+        [
+            simulate_neuron_with_place_field(
+                mean, position, max_rate=20.0, variance=36.0,
+                sampling_frequency=sampling_frequency,
+            )
+            for mean in place_field_means
+        ],
+        axis=1,
+    )
+    return position.reshape(-1, 1), spikes
+
+
+def test_sorted_spikes_classifier_with_tcm_sr_fits_and_predicts():
+    """TCM_SR must be a drop-in on the diagonal of the transition grid.
+
+    Exercises the position-dependent dispatch in
+    `fit_continuous_state_transition`, the `max_pos_bins_` zero padding, and
+    the interior slicing in `_get_results`.
+    """
+    from replay_trajectory_classification import (
+        TCM_SR,
+        Environment,
+        Identity,
+        SortedSpikesClassifier,
+        Uniform,
+    )
+
+    position, spikes = simulate_run_and_spikes()
+    environment = Environment(place_bin_size=3.0)
+    classifier = SortedSpikesClassifier(
+        environments=environment,
+        continuous_transition_types=[
+            [TCM_SR(gamma=0.9, beta=0.01), Uniform(), Identity()],
+            [Uniform(), Uniform(), Uniform()],
+            [TCM_SR(gamma=0.9, beta=0.01), Uniform(), Identity()],
+        ],
+        sorted_spikes_algorithm="spiking_likelihood_kde",
+        sorted_spikes_algorithm_params={"position_std": 3.0},
+    )
+    classifier.fit(position, spikes)
+
+    interior = environment.is_track_interior_.ravel(order="F")
+    block = classifier.continuous_state_transition_[0, 0]
+    n_bins = environment.place_bin_centers_.shape[0]
+    assert block.shape == (n_bins, n_bins)
+    np.testing.assert_allclose(
+        block[interior][:, interior].sum(axis=1), 1.0, atol=1e-10
+    )
+
+    results = classifier.predict(spikes[:200], time=np.arange(200))
+    posterior = results.acausal_posterior.values
+    assert np.isfinite(posterior).all()
+    np.testing.assert_allclose(posterior.reshape(200, -1).sum(axis=1), 1.0, atol=1e-8)
+
+
+def test_tcm_sr_is_dispatched_with_the_position_data():
+    """A transition missing from the dispatch tuple is silently never trained."""
+    from replay_trajectory_classification import (
+        TCM_SR,
+        Environment,
+        SortedSpikesClassifier,
+    )
+    from replay_trajectory_classification import Uniform
+
+    position, spikes = simulate_run_and_spikes()
+    recorded = {}
+    original = TCM_SR.make_state_transition
+
+    def spy(self, *args, **kwargs):
+        recorded["n_args"] = len(args)
+        return original(self, *args, **kwargs)
+
+    TCM_SR.make_state_transition = spy
+    try:
+        SortedSpikesClassifier(
+            environments=Environment(place_bin_size=3.0),
+            continuous_transition_types=[[TCM_SR(beta=0.01), Uniform()],
+                                         [Uniform(), Uniform()]],
+            sorted_spikes_algorithm="spiking_likelihood_kde",
+            sorted_spikes_algorithm_params={"position_std": 3.0},
+        ).fit(position, spikes)
+    finally:
+        TCM_SR.make_state_transition = original
+
+    assert recorded.get("n_args") == 5, "TCM_SR did not receive the position data"

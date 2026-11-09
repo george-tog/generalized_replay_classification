@@ -7,6 +7,7 @@ name = "replay_trajectory_classification"
 description = "Classify replay trajectories."
 authors = [
     {name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu"},
+    {name = "George Cai", email = "georgecai@g.harvard.edu"},
 ]
 license = "MIT"
 readme = "README.md"
@@ -76,8 +77,8 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Eden-Kramer-Lab/replay_trajectory_classification"
-Repository = "https://github.com/Eden-Kramer-Lab/replay_trajectory_classification"
+Homepage = "https://github.com/george-tog/generalized_replay_classification"
+Repository = "https://github.com/george-tog/generalized_replay_classification"
 Documentation = "https://replay-trajectory-classification.readthedocs.io/en/latest/"
 
 [tool.setuptools]

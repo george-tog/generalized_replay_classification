@@ -1,17 +1,34 @@
-# replay_trajectory_classification
+# generalized_replay_classification
 
-[![DOI](https://zenodo.org/badge/177004334.svg)](https://zenodo.org/badge/latestdoi/177004334)
-![PyPI version](https://img.shields.io/pypi/v/replay_trajectory_classification)
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Eden-Kramer-Lab/replay_trajectory_classification/master)
-[![PR Test](https://github.com/Eden-Kramer-Lab/replay_trajectory_classification/actions/workflows/PR-test.yml/badge.svg)](https://github.com/Eden-Kramer-Lab/replay_trajectory_classification/actions/workflows/PR-test.yml)
+> This is a fork of [replay_trajectory_classification](https://github.com/Eden-Kramer-Lab/replay_trajectory_classification) by Eric Denovellis and colleagues in the Eden and Frank labs. It adds `TCM_SR`, a continuous dynamic that models replay as movement along the routes the animal actually ran, and fits its parameters to replay by expectation maximization. The rest of the package is upstream's. The Python package is still imported as `replay_trajectory_classification`.
+>
+> If you use this code, please cite both [our paper](#this-fork) and [Denovellis et al. (2021)](#upstream).
+>
+> Report issues with the TCM-SR code in [this repository's issues](https://github.com/george-tog/generalized_replay_classification/issues), not upstream.
+>
+> Maintained by George Cai (<georgecai@g.harvard.edu>).
 
-[**Installation**](#installation)
-| [**Documentation**](#documentation)
+[**What this fork adds**](#what-this-fork-adds)
+| [**Installation**](#installation)
 | [**Tutorials**](#tutorials)
 | [**References**](#references)
 | [**Developer Installation**](#developer-installation)
 
-## What is replay_trajectory_classification?
+## What this fork adds
+
+- **`TCM_SR`**, a continuous transition built from the animal's empirical movement matrix `P`. It mixes a successor representation `M = (I - gamma * P)^-1 @ P` with a symmetric retrieved-context term `M.T @ M`. `gamma` sets how far ahead the kernel looks, and `asymmetry` how strongly it favors the direction of travel. It can replace `RandomWalk` in any classifier, and `RandomWalk` is the special case `TCM_SR(gamma=0, beta=1, asymmetry=1)`.
+- **EM for continuous transitions.** `estimate_parameters(estimate_continuous_transition=True)` fits the parameters named in a transition's `learn` field. `score_continuous_transition` gives the data log likelihood at any parameter values, which is useful for checking a fit.
+- **`continuous_transition_is_training`**, a new argument to `fit` on every classifier and decoder. The movement model can then include stops, such as at reward wells, while place fields are fit on running only.
+- **Simulation helpers** in `sorted_spikes_simulation.py`: a directed-loop position coordinate and TCM-SR replay simulators.
+- **Notebooks** in [notebooks/tcm_sr](#tcm-sr-notebooks).
+- **Fixes to upstream code:**
+  - `EmpiricalMovement` runs on NumPy 2.
+  - The default `encoding_group` of `EmpiricalMovement` is now `0` instead of `None`. `None` selected no data.
+  - `environments.py` works with pandas 3.
+
+Apart from the `EmpiricalMovement` fix, the existing classes, defaults and tutorial notebooks behave as they do upstream.
+
+## What is replay_trajectory_classification? (upstream)
 
 `replay_trajectory_classification` is a python package for decoding spatial position represented by neural activity and categorizing the type of trajectory.
 
@@ -32,7 +49,57 @@ It has several advantages over decoders typically used to characterize hippocamp
 7. Easily installable, documented code with tutorials on how to use the code (see below)
 8. Fast computation using GPUs. (Note: must install `cupy` to use)
 
-### References
+## Installation
+
+This fork is not on PyPI or conda. Install it from this repository:
+
+```bash
+git clone https://github.com/george-tog/generalized_replay_classification.git
+cd generalized_replay_classification
+conda env create -f environment.yml
+conda activate replay_trajectory_classification
+pip install -e .
+```
+
+The `conda install -c edeno replay_trajectory_classification` and `pip install replay_trajectory_classification` packages are upstream's and do not include `TCM_SR`.
+
+**Requirements**: Python 3.10+ with scientific computing stack (NumPy, SciPy, pandas, etc.)
+
+### Documentation
+
+The upstream documentation covers everything except the additions above: <https://replay-trajectory-classification.readthedocs.io/en/latest/>. The additions are documented in their docstrings and in the TCM-SR notebooks.
+
+## Tutorials
+
+There are five jupyter notebooks introducing the package:
+
+1. [01-Introduction_and_Data_Format](notebooks/tutorial/01-Introduction_and_Data_Format.ipynb): How to get your data in the correct format to use with the decoder.
+2. [02-Decoding_with_Sorted_Spikes](notebooks/tutorial/02-Decoding_with_Sorted_Spikes.ipynb): How to decode using a single movement model using sorted spikes.
+3. [03-Decoding_with_Clusterless_Spikes](notebooks/tutorial/03-Decoding_with_Clusterless_Spikes.ipynb): How to decode using a single movement model using the "clusterless" approach --- which does not require spike sorting.
+4. [04-Classifying_with_Sorted_Spikes](notebooks/tutorial/04-Classifying_with_Sorted_Spikes.ipynb): Using multiple movement models to classify the movement dynamics and decode the trajectory using sorted spikes.
+5. [05-Classifying_with_Clusterless_Spikes](notebooks/tutorial/05-Classifying_with_Clusterless_Spikes.ipynb): Using multiple movement models to classify the movement dynamics and decode the trajectory using clusterless spikes.
+
+### TCM-SR notebooks
+
+In [notebooks/tcm_sr](notebooks/tcm_sr):
+
+1. [Classifying_with_Sorted_Spikes_TCM_SR](notebooks/tcm_sr/Classifying_with_Sorted_Spikes_TCM_SR.ipynb): Simulated replay on a directed linear track. Classifies sweeps, TCM-SR sequences, random jumps and stationary events, and compares `TCM_SR` with `RandomWalk`.
+2. [Fitting_TCM_SR_with_EM](notebooks/tcm_sr/Fitting_TCM_SR_with_EM.ipynb): Recovers `gamma` and `asymmetry` by EM from simulated replay, and checks the fit against a grid of the marginal likelihood.
+3. [Fitting_TCM_SR_on_Pfeiffer_Rat1_Linear1](notebooks/tcm_sr/Fitting_TCM_SR_on_Pfeiffer_Rat1_Linear1.ipynb): Fits `TCM_SR` by EM to population bursts recorded on a linear track (Pfeiffer & Foster, 2015), and compares it with `RandomWalk` on held-out events. All the dataset-specific loading is in one cell, so another linear-track recording can be plugged in by replacing it.
+
+The simulation notebooks share their settings and helpers through `tcmsr_simulation_config.py` and `tcmsr_simulation.py` in the same folder.
+
+## References
+
+### This fork
+
+> [Authors] ([year]). [Title]. [Journal / preprint]. [DOI]
+
+The real-data notebook uses data from:
+
+> Pfeiffer, B.E., and Foster, D.J. (2015). Autoassociative dynamics in the generation of sequences of hippocampal place cells. Science 349, 180–183.
+
+### Upstream
 
 For further details, please see our [eLife paper](https://doi.org/10.7554/eLife.64505):
 > Denovellis, E.L., Gillespie, A.K., Coulter, M.E., Sosa, M., Chung, J.E., Eden, U.T., and Frank, L.M. (2021). Hippocampal replay of experience at real-world speeds. ELife 10, e64505.
@@ -47,37 +114,9 @@ Also see other work using this code:
 
 > Gillespie, A.K., Astudillo Maya, D.A., Denovellis, E.L., Desse, S., and Frank, L.M. (2022). Neurofeedback training can modulate task-relevant memory replay in rats. bioRxiv, 2022.10.13.512183. <https://doi.org/10.1101/2022.10.13.512183>.
 
-### Installation
+Upstream: [![DOI](https://zenodo.org/badge/177004334.svg)](https://zenodo.org/badge/latestdoi/177004334) [GitHub](https://github.com/Eden-Kramer-Lab/replay_trajectory_classification)
 
-`replay_trajectory_classification` can be installed through PyPI or conda. **Conda is strongly recommended** to ensure that all complex scientific dependencies are installed properly.
-
-#### Recommended (Conda)
-```bash
-conda install -c edeno replay_trajectory_classification
-```
-
-#### Alternative (PyPI)
-```bash
-pip install replay_trajectory_classification
-```
-
-**Requirements**: Python 3.10+ with scientific computing stack (NumPy, SciPy, pandas, etc.)
-
-### Documentation
-
-Documentation can be found here: <https://replay-trajectory-classification.readthedocs.io/en/latest/>
-
-### Tutorials
-
-There are five jupyter notebooks introducing the package:
-
-1. [01-Introduction_and_Data_Format](notebooks/tutorial/01-Introduction_and_Data_Format.ipynb): How to get your data in the correct format to use with the decoder.
-2. [02-Decoding_with_Sorted_Spikes](notebooks/tutorial/02-Decoding_with_Sorted_Spikes.ipynb): How to decode using a single movement model using sorted spikes.
-3. [03-Decoding_with_Clusterless_Spikes](notebooks/tutorial/03-Decoding_with_Clusterless_Spikes.ipynb): How to decode using a single movement model using the "clusterless" approach --- which does not require spike sorting.
-4. [04-Classifying_with_Sorted_Spikes](notebooks/tutorial/04-Classifying_with_Sorted_Spikes.ipynb): Using multiple movement models to classify the movement dynamics and decode the trajectory using sorted spikes.
-5. [05-Classifying_with_Clusterless_Spikes](notebooks/tutorial/05-Classifying_with_Clusterless_Spikes.ipynb): Using multiple movement models to classify the movement dynamics and decode the trajectory using clusterless spikes.
-
-### Developer Installation
+## Developer Installation
 
 For people who want to expand upon the code for their own use:
 

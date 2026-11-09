@@ -257,6 +257,84 @@ def _acausal_classify(
     return acausal_posterior
 
 
+@njit(nogil=True, error_model="numpy", cache=False)
+def _expected_transition_counts(
+    causal_posterior: NDArray[np.float64],
+    acausal_posterior: NDArray[np.float64],
+    continuous_state_transition: NDArray[np.float64],
+    discrete_state_transition: NDArray[np.float64],
+    block_mask: NDArray[np.bool_],
+) -> NDArray[np.float64]:
+    """Expected number of transitions between every pair of (state, bin).
+
+    The E-step statistic for fitting a continuous transition:
+
+        E[s, s', i, j] = sum_t p(I_t = s, x_t = i, I_{t+1} = s', x_{t+1} = j | y_{1:T})
+                       = sum_t causal[t, s, i] * D[s, s'] * C[s, s'][i, j]
+                               * acausal[t + 1, s', j] / prior[t + 1, s', j]
+
+    `prior` and the `eps` guard are computed exactly as in `_acausal_classify`,
+    so the counts match the classifier's posteriors. `D * C` is constant over
+    time, so it multiplies the accumulated outer products once at the end.
+    With every block selected, `E.sum()` is `n_time - 1`, and summing out the
+    destination or the source recovers the acausal posterior at the earlier or
+    later time.
+
+    Parameters
+    ----------
+    causal_posterior : NDArray[np.float64], shape (n_time, n_states, n_bins, 1)
+    acausal_posterior : NDArray[np.float64], shape (n_time, n_states, n_bins, 1)
+    continuous_state_transition : NDArray[np.float64], shape (n_states, n_states, n_bins, n_bins)
+    discrete_state_transition : NDArray[np.float64], shape (n_states, n_states)
+    block_mask : NDArray[np.bool_], shape (n_states, n_states)
+        Which `(from_state, to_state)` blocks to accumulate. Unselected blocks
+        are returned as zeros.
+
+    Returns
+    -------
+    expected_counts : NDArray[np.float64], shape (n_states, n_states, n_bins, n_bins)
+
+    """
+    n_time, n_states, n_bins, _ = causal_posterior.shape
+    eps = np.spacing(1)
+    expected_counts = np.zeros((n_states, n_states, n_bins, n_bins))
+
+    for k in np.arange(n_time - 1):
+        # Prediction Step -- p(x_{k+1}, I_{k+1} | y_{1:k}), as in `_acausal_classify`
+        prior = np.zeros((n_states, n_bins, 1))
+        for state_k_1 in np.arange(n_states):
+            for state_k in np.arange(n_states):
+                prior[state_k_1, :] += (
+                    discrete_state_transition[state_k, state_k_1]
+                    * continuous_state_transition[state_k, state_k_1].T
+                    @ causal_posterior[k, state_k]
+                )
+        ratio = np.exp(np.log(acausal_posterior[k + 1] + eps) - np.log(prior + eps))
+
+        for from_state in np.arange(n_states):
+            for to_state in np.arange(n_states):
+                if not block_mask[from_state, to_state]:
+                    continue
+                for i in np.arange(n_bins):
+                    causal = causal_posterior[k, from_state, i, 0]
+                    if causal == 0.0:
+                        continue
+                    for j in np.arange(n_bins):
+                        expected_counts[from_state, to_state, i, j] += (
+                            causal * ratio[to_state, j, 0]
+                        )
+
+    for from_state in np.arange(n_states):
+        for to_state in np.arange(n_states):
+            if block_mask[from_state, to_state]:
+                expected_counts[from_state, to_state] *= (
+                    discrete_state_transition[from_state, to_state]
+                    * continuous_state_transition[from_state, to_state]
+                )
+
+    return expected_counts
+
+
 def scaled_likelihood(log_likelihood: NDArray[np.float64], axis: int = 1) -> NDArray[np.float64]:
     """Scale the likelihood so the maximum value is 1.
 

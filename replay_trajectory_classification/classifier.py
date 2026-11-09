@@ -6,6 +6,7 @@ activity from both sorted spikes and clusterless data.
 
 from __future__ import annotations
 
+import dataclasses
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from logging import getLogger
@@ -23,6 +24,8 @@ import xarray as xr
 from sklearn.base import BaseEstimator
 
 from replay_trajectory_classification.continuous_state_transitions import (
+    POSITION_DEPENDENT_TRANSITIONS,
+    TCM_SR,
     EmpiricalMovement,
     RandomWalk,
     RandomWalkDirection1,
@@ -34,6 +37,7 @@ from replay_trajectory_classification.core import (
     _acausal_classify_gpu,
     _causal_classify,
     _causal_classify_gpu,
+    _expected_transition_counts,
     atleast_2d,
     check_converged,
     get_centers,
@@ -109,6 +113,7 @@ class _ClassifierBase(BaseEstimator, ABC):
                     RandomWalk,
                     RandomWalkDirection1,
                     RandomWalkDirection2,
+                    TCM_SR,
                     Uniform,
                 ]
             ]
@@ -190,6 +195,7 @@ class _ClassifierBase(BaseEstimator, ABC):
                     RandomWalk,
                     RandomWalkDirection1,
                     RandomWalkDirection2,
+                    TCM_SR,
                     Uniform,
                 ]
             ]
@@ -234,7 +240,7 @@ class _ClassifierBase(BaseEstimator, ABC):
         for row in self.continuous_transition_types:
             continuous_state_transition.append([])
             for transition in row:
-                if isinstance(transition, EmpiricalMovement):
+                if isinstance(transition, POSITION_DEPENDENT_TRANSITIONS):
                     continuous_state_transition[-1].append(
                         transition.make_state_transition(
                             self.environments,
@@ -338,8 +344,11 @@ class _ClassifierBase(BaseEstimator, ABC):
         store_likelihood: bool = True,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
+        estimate_continuous_transition: bool = False,
+        m_step_kwargs: Optional[dict] = None,
     ) -> tuple[xr.Dataset, list[float]]:
-        """Estimate the intial conditions and/or discrete transition matrix of the model.
+        """Estimate the intial conditions, discrete transition and/or continuous
+        transition parameters of the model by expectation maximization.
 
         Parameters
         ----------
@@ -359,6 +368,16 @@ class _ClassifierBase(BaseEstimator, ABC):
             If True, estimate the initial conditions, by default True
         estimate_discrete_transition : bool, optional
             If True, estimate the discrete state transition, by default True
+        estimate_continuous_transition : bool, optional
+            If True, fit the parameters named in each continuous transition's
+            `learn` field (currently `TCM_SR`) by EM, by default False. Each
+            iteration sums the expected transition counts over every cell that
+            uses a transition, calls its `m_step`, and rebuilds those cells. The
+            per-iteration results are stored in
+            `continuous_transition_parameter_history_`.
+        m_step_kwargs : dict, optional
+            Keyword arguments for each transition's `m_step`, such as
+            `gamma_bounds` or `n_horizon_grid`, by default None.
 
         Returns
         -------
@@ -367,6 +386,21 @@ class _ClassifierBase(BaseEstimator, ABC):
             The data log likelihood of each iteration
 
         """
+        if estimate_continuous_transition:
+            if not self._fitted_continuous_transitions():
+                raise ValueError(
+                    "estimate_continuous_transition=True but no continuous "
+                    "transition has anything in `learn`, e.g. "
+                    'TCM_SR(..., learn=("gamma", "asymmetry")).'
+                )
+            if predict_args.get("is_compute_acausal", True) is False:
+                raise ValueError(
+                    "estimate_continuous_transition needs the acausal posterior; "
+                    "do not pass is_compute_acausal=False."
+                )
+        m_step_kwargs = {} if m_step_kwargs is None else m_step_kwargs
+        self.continuous_transition_parameter_history_ = []
+
         if "store_likelihood" in predict_args:
             store_likelihood = predict_args["store_likelihood"]
         else:
@@ -390,6 +424,12 @@ class _ClassifierBase(BaseEstimator, ABC):
         }
 
         while not converged and (n_iter < max_iter):
+            # E-step first: its counts must come from the transitions that
+            # produced `results`, before any of them is updated.
+            if estimate_continuous_transition:
+                expected_counts = self._estimate_expected_transition_counts(
+                    results, self._fitted_block_mask()
+                )
             if estimate_initial_conditions:
                 self.initial_conditions_ = results.isel(
                     time=0
@@ -397,6 +437,12 @@ class _ClassifierBase(BaseEstimator, ABC):
             if estimate_discrete_transition:
                 self.discrete_state_transition_ = estimate_discrete_state_transition(
                     self, results
+                )
+            if estimate_continuous_transition:
+                self.continuous_transition_parameter_history_.append(
+                    self._fit_continuous_transition_parameters(
+                        expected_counts, m_step_kwargs
+                    )
                 )
 
             if store_likelihood:
@@ -413,6 +459,13 @@ class _ClassifierBase(BaseEstimator, ABC):
             converged, increasing = check_converged(
                 data_log_likelihoods[-1], data_log_likelihoods[-2], tolerance
             )
+            if not increasing:
+                logger.warning(
+                    f"iteration {n_iter}: data log likelihood decreased by "
+                    f"{-log_likelihood_change}. The EM updates of the initial "
+                    "conditions and continuous transitions cannot decrease it; "
+                    "the approximate discrete transition update can."
+                )
 
             if verbose:
                 logger.info(
@@ -425,6 +478,194 @@ class _ClassifierBase(BaseEstimator, ABC):
             logger.warning("Max iterations reached...")
 
         return results, data_log_likelihoods
+
+    def _fitted_continuous_transitions(
+        self,
+    ) -> list[tuple[object, list[tuple[int, int]]]]:
+        """Distinct continuous transitions with something in `learn`, and their cells.
+
+        Instances are distinguished by identity, so an instance used in several
+        cells is fit once from all of their counts.
+        """
+        fitted: dict[int, tuple[object, list[tuple[int, int]]]] = {}
+        for row_ind, row in enumerate(self.continuous_transition_types):
+            for column_ind, transition in enumerate(row):
+                if getattr(transition, "learn", ()):
+                    fitted.setdefault(id(transition), (transition, []))[1].append(
+                        (row_ind, column_ind)
+                    )
+        return list(fitted.values())
+
+    def _fitted_block_mask(self) -> NDArray[np.bool_]:
+        """Boolean (n_states, n_states) mask of the cells whose transition is fit."""
+        n_states = len(self.continuous_transition_types)
+        block_mask = np.zeros((n_states, n_states), dtype=bool)
+        for _, cells in self._fitted_continuous_transitions():
+            for cell in cells:
+                block_mask[cell] = True
+        return block_mask
+
+    def _interior_posteriors(
+        self, results: xr.Dataset
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Causal and acausal posteriors on the track interior, as numba sees them.
+
+        Inverts the masking and the 2D `order="F"` reshape of
+        `_convert_results_to_xarray`.
+
+        Returns
+        -------
+        causal_posterior, acausal_posterior : NDArray[np.float64], shape (n_time, n_states, n_interior_bins, 1)
+
+        """
+        if len(self.environments) > 1:
+            raise NotImplementedError(
+                "Fitting continuous transitions supports a single environment."
+            )
+        is_track_interior = self.environments[0].is_track_interior_.ravel(order="F")
+        n_time, n_states = results.sizes["time"], results.sizes["state"]
+
+        def interior(name: str) -> NDArray[np.float64]:
+            values = results[name].values.reshape((n_time, n_states, -1), order="F")
+            return np.ascontiguousarray(
+                values[:, :, is_track_interior, np.newaxis], dtype=np.float64
+            )
+
+        return interior("causal_posterior"), interior("acausal_posterior")
+
+    def _estimate_expected_transition_counts(
+        self, results: xr.Dataset, block_mask: NDArray[np.bool_]
+    ) -> NDArray[np.float64]:
+        """E-step: expected transition counts on the track interior.
+
+        Returns
+        -------
+        expected_counts : NDArray[np.float64], shape (n_states, n_states, n_interior_bins, n_interior_bins)
+
+        """
+        causal_posterior, acausal_posterior = self._interior_posteriors(results)
+        is_track_interior = self.environments[0].is_track_interior_.ravel(order="F")
+        is_states = np.ones((self.discrete_state_transition_.shape[0],), dtype=bool)
+        continuous_state_transition = np.ascontiguousarray(
+            self.continuous_state_transition_[
+                np.ix_(is_states, is_states, is_track_interior, is_track_interior)
+            ],
+            dtype=np.float64,
+        )
+        return _expected_transition_counts(
+            causal_posterior,
+            acausal_posterior,
+            continuous_state_transition,
+            self.discrete_state_transition_.astype(np.float64),
+            block_mask,
+        )
+
+    def _write_continuous_transition(
+        self, cells: list[tuple[int, int]], state_transition: NDArray[np.float64]
+    ) -> None:
+        """Write one transition matrix into the given cells."""
+        n_rows, n_columns = state_transition.shape
+        for row_ind, column_ind in cells:
+            self.continuous_state_transition_[
+                row_ind, column_ind, :n_rows, :n_columns
+            ] = state_transition
+
+    def _fit_continuous_transition_parameters(
+        self, expected_counts: NDArray[np.float64], m_step_kwargs: dict
+    ) -> dict:
+        """M-step for every fitted continuous transition, then rebuild its cells.
+
+        Returns
+        -------
+        info : dict
+            The `m_step` result of each fitted transition, keyed by its cells.
+
+        """
+        info = {}
+        for transition, cells in self._fitted_continuous_transitions():
+            summed_counts = np.sum(
+                [expected_counts[row_ind, column_ind] for row_ind, column_ind in cells],
+                axis=0,
+            )
+            info[tuple(cells)] = transition.m_step(summed_counts, **m_step_kwargs)
+            self._write_continuous_transition(
+                cells, transition.rebuild_state_transition()
+            )
+        return info
+
+    def score_continuous_transition(
+        self, transition, use_gpu: bool = False, **parameters
+    ) -> float:
+        """Data log likelihood with `transition`'s parameters temporarily changed.
+
+        Runs one forward pass on the likelihood cached by
+        `predict(..., store_likelihood=True)`, then restores the model. Use it
+        to cross-check a fit. Scores are comparable only across calls that share
+        one cached likelihood, because the likelihood is scaled before the
+        forward pass.
+
+        Parameters
+        ----------
+        transition : continuous transition instance
+            An instance in `continuous_transition_types` with a
+            `rebuild_state_transition` method, such as a fitted `TCM_SR`.
+        use_gpu : bool, optional
+            Run the forward pass on the GPU, by default False.
+        **parameters
+            Field values to score, e.g. `gamma=0.9, asymmetry=0.7`. With none,
+            the current model is scored.
+
+        Returns
+        -------
+        data_log_likelihood : float
+
+        """
+        if getattr(self, "likelihood_", None) is None:
+            raise ValueError(
+                "No cached likelihood; call predict(..., store_likelihood=True) first."
+            )
+        cells = [
+            (row_ind, column_ind)
+            for row_ind, row in enumerate(self.continuous_transition_types)
+            for column_ind, candidate in enumerate(row)
+            if candidate is transition
+        ]
+        if not cells:
+            raise ValueError("`transition` is not in continuous_transition_types.")
+        if parameters:
+            if not hasattr(transition, "rebuild_state_transition"):
+                raise TypeError(
+                    f"{type(transition).__name__} cannot be rebuilt with new "
+                    "parameters."
+                )
+            field_names = {field.name for field in dataclasses.fields(transition)}
+            unknown = sorted(set(parameters) - field_names)
+            if unknown:
+                raise ValueError(
+                    f"{type(transition).__name__} has no fields {unknown}."
+                )
+
+        old_parameters = {name: getattr(transition, name) for name in parameters}
+        old_blocks = {
+            cell: self.continuous_state_transition_[cell].copy() for cell in cells
+        }
+        try:
+            for name, value in parameters.items():
+                setattr(transition, name, value)
+            if parameters:
+                self._write_continuous_transition(
+                    cells, transition.rebuild_state_transition()
+                )
+            n_time = next(iter(self.likelihood_.values())).shape[0]
+            results = self._get_results(
+                self.likelihood_, n_time, is_compute_acausal=False, use_gpu=use_gpu
+            )
+            return float(results.data_log_likelihood)
+        finally:
+            for name, value in old_parameters.items():
+                setattr(transition, name, value)
+            for cell, block in old_blocks.items():
+                self.continuous_state_transition_[cell] = block
 
     @staticmethod
     def convert_2D_to_1D_results(
@@ -889,6 +1130,7 @@ class SortedSpikesClassifier(_ClassifierBase):
                     RandomWalk,
                     RandomWalkDirection1,
                     RandomWalkDirection2,
+                    TCM_SR,
                     Uniform,
                 ]
             ]
@@ -1042,6 +1284,7 @@ class SortedSpikesClassifier(_ClassifierBase):
         is_training: Optional[NDArray[np.bool_]] = None,
         encoding_group_labels: Optional[NDArray[np.int64]] = None,
         environment_labels: Optional[NDArray[np.int64]] = None,
+        continuous_transition_is_training: Optional[NDArray[np.bool_]] = None,
     ) -> Self:
         """Fit the spatial grid, initial conditions, place field model, and
         transition matrices.
@@ -1058,6 +1301,12 @@ class SortedSpikesClassifier(_ClassifierBase):
             Label for the corresponding encoding group for each time point
         environment_labels : None or NDArray[np.int64], shape (n_time,)
             Label for the corresponding environment for each time point
+        continuous_transition_is_training : None or NDArray[np.bool_], shape (n_time,)
+            Which data the continuous transitions learned from behavior
+            (`EmpiricalMovement`, `TCM_SR`) count movements from. By default
+            None, which uses `is_training`. Set it to keep stops, such as at
+            reward wells, in the movement model while fitting place fields on
+            running only.
 
         Returns
         -------
@@ -1066,12 +1315,14 @@ class SortedSpikesClassifier(_ClassifierBase):
         """
         position = atleast_2d(np.asarray(position))
         spikes = np.asarray(spikes)
+        if continuous_transition_is_training is None:
+            continuous_transition_is_training = is_training
         self.fit_environments(position, environment_labels)
         self.fit_initial_conditions()
         self.fit_continuous_state_transition(
             self.continuous_transition_types,
             position,
-            is_training,
+            continuous_transition_is_training,
             encoding_group_labels,
             environment_labels,
         )
@@ -1170,6 +1421,7 @@ class ClusterlessClassifier(_ClassifierBase):
                     RandomWalk,
                     RandomWalkDirection1,
                     RandomWalkDirection2,
+                    TCM_SR,
                     Uniform,
                 ]
             ]
@@ -1275,6 +1527,7 @@ class ClusterlessClassifier(_ClassifierBase):
         is_training: Optional[NDArray[np.bool_]] = None,
         encoding_group_labels: Optional[NDArray[np.int64]] = None,
         environment_labels: Optional[NDArray[np.int64]] = None,
+        continuous_transition_is_training: Optional[NDArray[np.bool_]] = None,
     ) -> Self:
         """Fit the spatial grid, initial conditions, place field model, and
         transition matrices.
@@ -1292,6 +1545,12 @@ class ClusterlessClassifier(_ClassifierBase):
             Label for the corresponding encoding group for each time point
         environment_labels : None or NDArray[np.int64], shape (n_time,)
             Label for the corresponding environment for each time point
+        continuous_transition_is_training : None or NDArray[np.bool_], shape (n_time,)
+            Which data the continuous transitions learned from behavior
+            (`EmpiricalMovement`, `TCM_SR`) count movements from. By default
+            None, which uses `is_training`. Set it to keep stops, such as at
+            reward wells, in the movement model while fitting the mark model on
+            running only.
 
         Returns
         -------
@@ -1300,13 +1559,15 @@ class ClusterlessClassifier(_ClassifierBase):
         """
         position = atleast_2d(np.asarray(position))
         multiunits = np.asarray(multiunits)
+        if continuous_transition_is_training is None:
+            continuous_transition_is_training = is_training
 
         self.fit_environments(position, environment_labels)
         self.fit_initial_conditions()
         self.fit_continuous_state_transition(
             self.continuous_transition_types,
             position,
-            is_training,
+            continuous_transition_is_training,
             encoding_group_labels,
             environment_labels,
         )

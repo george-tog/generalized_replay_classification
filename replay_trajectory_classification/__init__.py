@@ -30,6 +30,7 @@ from replay_trajectory_classification.classifier import (
     SortedSpikesClassifier,
 )
 from replay_trajectory_classification.continuous_state_transitions import (
+    TCM_SR,
     EmpiricalMovement,
     Identity,
     RandomWalk,

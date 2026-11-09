@@ -1,16 +1,55 @@
-# YAML 1.2
-# Metadata for citation of this software according to the CFF format (https://citation-file-format.github.io/)
-cff-version: 1.0.3
-message: If you use this software, please cite it using these metadata.
-# FIXME title as repository name might not be the best name, please make human readable
-title: 'Eden-Kramer-Lab/replay_trajectory_classification: 0.9.1.dev0'
-doi: 10.5281/zenodo.5048350
-# FIXME splitting of full names is error prone, please check if given/family name are correct
+cff-version: 1.2.0
+message: If you use this software, please cite it and the upstream package it extends.
+title: generalized_replay_classification
+abstract: >-
+  A fork of replay_trajectory_classification that adds TCM_SR, a successor
+  representation continuous dynamic for classifying hippocampal replay, fit by
+  expectation maximization.
 authors:
-- given-names: Eric
-  family-names: Denovellis
-  affiliation: UCSF
-version: 0.9.1.dev0
-date-released: 2021-06-30
-repository-code: https://github.com/Eden-Kramer-Lab/replay_trajectory_classification
-license: other-open
+  - given-names: George
+    family-names: Cai
+    email: georgecai@g.harvard.edu
+    affiliation: Harvard University
+repository-code: https://github.com/george-tog/generalized_replay_classification
+license: MIT
+# TODO: add the paper as the preferred citation once it exists, e.g.
+# preferred-citation:
+#   type: article
+#   authors:
+#     - given-names: George
+#       family-names: Cai
+#   title: "[Title]"
+#   journal: "[Journal]"
+#   year: [Year]
+#   doi: [DOI]
+references:
+  - type: software
+    title: replay_trajectory_classification
+    authors:
+      - given-names: Eric
+        family-names: Denovellis
+    doi: 10.5281/zenodo.5048350
+    repository-code: https://github.com/Eden-Kramer-Lab/replay_trajectory_classification
+    license: MIT
+  - type: article
+    title: Hippocampal replay of experience at real-world speeds
+    authors:
+      - given-names: Eric L.
+        family-names: Denovellis
+      - given-names: Anna K.
+        family-names: Gillespie
+      - given-names: Michael E.
+        family-names: Coulter
+      - given-names: Marielena
+        family-names: Sosa
+      - given-names: Jason E.
+        family-names: Chung
+      - given-names: Uri T.
+        family-names: Eden
+      - given-names: Loren M.
+        family-names: Frank
+    journal: eLife
+    volume: 10
+    start: e64505
+    year: 2021
+    doi: 10.7554/eLife.64505

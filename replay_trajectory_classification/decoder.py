@@ -18,6 +18,8 @@ import xarray as xr
 from sklearn.base import BaseEstimator
 
 from replay_trajectory_classification.continuous_state_transitions import (
+    POSITION_DEPENDENT_TRANSITIONS,
+    TCM_SR,
     EmpiricalMovement,
     RandomWalk,
     RandomWalkDirection1,
@@ -82,6 +84,7 @@ class _DecoderBase(BaseEstimator):
             RandomWalk,
             RandomWalkDirection1,
             RandomWalkDirection2,
+            TCM_SR,
             Uniform,
         ] = RandomWalk(),
         initial_conditions_type: UniformInitialConditions = UniformInitialConditions(),
@@ -122,6 +125,7 @@ class _DecoderBase(BaseEstimator):
                 RandomWalk,
                 RandomWalkDirection1,
                 RandomWalkDirection2,
+                TCM_SR,
                 Uniform,
             ]
         ] = None,
@@ -145,7 +149,7 @@ class _DecoderBase(BaseEstimator):
         if transition_type is not None:
             self.transition_type = transition_type
 
-        if isinstance(self.transition_type, EmpiricalMovement):
+        if isinstance(self.transition_type, POSITION_DEPENDENT_TRANSITIONS):
             if is_training is None:
                 is_training = np.ones((position.shape[0],), dtype=bool)
             is_training = np.asarray(is_training).squeeze()
@@ -422,6 +426,7 @@ class SortedSpikesDecoder(_DecoderBase):
             RandomWalk,
             RandomWalkDirection1,
             RandomWalkDirection2,
+            TCM_SR,
             Uniform,
         ] = RandomWalk(),
         initial_conditions_type: UniformInitialConditions = UniformInitialConditions(),
@@ -528,6 +533,7 @@ class SortedSpikesDecoder(_DecoderBase):
         position: NDArray[np.float64],
         spikes: NDArray[np.int64],
         is_training: Optional[NDArray[np.bool_]] = None,
+        continuous_transition_is_training: Optional[NDArray[np.bool_]] = None,
     ) -> "SortedSpikesDecoder":
         """Fit the spatial grid, initial conditions, place field model, and
         transition matrix.
@@ -542,6 +548,10 @@ class SortedSpikesDecoder(_DecoderBase):
         is_training : NDArray[np.bool_], shape (n_time), optional
             Boolean array to indicate which data should be included in fitting
             of place fields, by default None
+        continuous_transition_is_training : NDArray[np.bool_], shape (n_time), optional
+            Which data a transition learned from behavior (`EmpiricalMovement`,
+            `TCM_SR`) counts movements from, by default None, which uses
+            `is_training`.
 
         Returns
         -------
@@ -551,10 +561,14 @@ class SortedSpikesDecoder(_DecoderBase):
         """
         position = atleast_2d(np.asarray(position))
         spikes = np.asarray(spikes)
+        if continuous_transition_is_training is None:
+            continuous_transition_is_training = is_training
         self.fit_environment(position)
         self.fit_initial_conditions()
         self.fit_state_transition(
-            position, is_training, transition_type=self.transition_type
+            position,
+            continuous_transition_is_training,
+            transition_type=self.transition_type,
         )
         self.fit_place_fields(position, spikes, is_training)
 
@@ -633,6 +647,7 @@ class ClusterlessDecoder(_DecoderBase):
             RandomWalk,
             RandomWalkDirection1,
             RandomWalkDirection2,
+            TCM_SR,
             Uniform,
         ] = RandomWalk(),
         initial_conditions_type: UniformInitialConditions = UniformInitialConditions(),
@@ -686,6 +701,7 @@ class ClusterlessDecoder(_DecoderBase):
         position: NDArray[np.float64],
         multiunits: NDArray[np.float64],
         is_training: Optional[NDArray[np.bool_]] = None,
+        continuous_transition_is_training: Optional[NDArray[np.bool_]] = None,
     ) -> "ClusterlessDecoder":
         """Fit the spatial grid, initial conditions, place field model, and
         transition matrices.
@@ -701,6 +717,10 @@ class ClusterlessDecoder(_DecoderBase):
         is_training : NDArray[np.bool_], shape (n_time), optional
             Boolean array to indicate which data should be included in fitting
             of place fields, by default None
+        continuous_transition_is_training : NDArray[np.bool_], shape (n_time), optional
+            Which data a transition learned from behavior (`EmpiricalMovement`,
+            `TCM_SR`) counts movements from, by default None, which uses
+            `is_training`.
 
         Returns
         -------
@@ -710,11 +730,15 @@ class ClusterlessDecoder(_DecoderBase):
         """
         position = atleast_2d(np.asarray(position))
         multiunits = np.asarray(multiunits)
+        if continuous_transition_is_training is None:
+            continuous_transition_is_training = is_training
 
         self.fit_environment(position)
         self.fit_initial_conditions()
         self.fit_state_transition(
-            position, is_training, transition_type=self.transition_type
+            position,
+            continuous_transition_is_training,
+            transition_type=self.transition_type,
         )
         self.fit_multiunits(position, multiunits, is_training)
 

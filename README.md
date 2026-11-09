@@ -93,7 +93,7 @@ The simulation notebooks share their settings and helpers through `tcmsr_simulat
 
 ### This fork
 
-> [Authors] ([year]). [Title]. [Journal / preprint]. [DOI]
+> Preprint coming soon.
 
 The real-data notebook uses data from:
 
